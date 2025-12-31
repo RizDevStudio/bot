@@ -200,7 +200,7 @@ ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
 
 📝 *Contoh:*
 \`\`\`
-ABSENSI#0085517246#Syarif Hidayat#6281234567890
+ABSENSI#12346785921#Budi Susanto#6281234567890
 \`\`\`
 
 ⚠️ *Perhatian:*
@@ -233,7 +233,7 @@ ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
 
 Contoh:
 \`\`\`
-ABSENSI#0085517246#Syarif Hidayat#6281234567890
+ABSENSI#1234567890#Budi Susanto#6281234567890
 \`\`\`
 
 Anda mengirim ${parts.length} bagian, seharusnya 4 bagian.`;
@@ -248,7 +248,7 @@ Anda mengirim ${parts.length} bagian, seharusnya 4 bagian.`;
       // ✅ VALIDASI NISN
       const nisnCheck = validateNISN(nisnRaw);
       if (!nisnCheck.valid) {
-        await sock.sendMessage(jid, { text: `❌ ${nisnCheck.error}\n\nContoh NISN yang benar: 0085517246` });
+        await sock.sendMessage(jid, { text: `❌ ${nisnCheck.error}\n\nContoh NISN yang benar: 00812346754` });
         console.log(`   → Validasi NISN gagal: ${nisnCheck.error}\n`);
         return;
       }
