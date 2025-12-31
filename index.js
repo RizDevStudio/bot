@@ -22,25 +22,48 @@ if (!fs.existsSync(authFolder)) {
 }
 
 // ✅ Fungsi untuk validasi dan ekstrak nomor HP
-function extractPhoneNumber(jid) {
+function extractPhoneNumber(jid, msg) {
   try {
-    // Normalize JID terlebih dahulu
+    // METODE 1: Coba ambil dari participant (untuk pesan yang dikirim dari device lain)
+    if (msg.key.participant) {
+      const participant = msg.key.participant.replace('@s.whatsapp.net', '');
+      if (/^\d{10,15}$/.test(participant)) {
+        console.log(`[✓] Nomor dari participant: ${participant}`);
+        return participant;
+      }
+    }
+
+    // METODE 2: Coba normalize JID standar
     const normalized = jidNormalizedUser(jid);
-    
-    // Format yang valid: angka@s.whatsapp.net
-    if (!normalized || !normalized.endsWith('@s.whatsapp.net')) {
-      return null;
+    if (normalized && normalized.endsWith('@s.whatsapp.net')) {
+      const phone = normalized.replace('@s.whatsapp.net', '');
+      if (/^\d{10,15}$/.test(phone)) {
+        console.log(`[✓] Nomor dari JID normalized: ${phone}`);
+        return phone;
+      }
     }
 
-    // Extract nomor tanpa suffix
-    const phone = normalized.replace('@s.whatsapp.net', '');
-    
-    // Validasi: harus angka, minimal 10 digit, maksimal 15 digit
-    if (!/^\d{10,15}$/.test(phone)) {
-      return null;
+    // METODE 3: Untuk @lid, coba extract dari remoteJid langsung
+    if (jid.includes('@lid')) {
+      console.log(`[!] Terdeteksi format @lid: ${jid}`);
+      // Cek apakah ada info di message key
+      if (msg.key.remoteJid && msg.key.remoteJid !== jid) {
+        const alt = msg.key.remoteJid.replace('@s.whatsapp.net', '');
+        if (/^\d{10,15}$/.test(alt)) {
+          console.log(`[✓] Nomor dari alternative remoteJid: ${alt}`);
+          return alt;
+        }
+      }
     }
 
-    return phone;
+    // METODE 4: Parse langsung dari string JID jika ada angka
+    const match = jid.match(/(\d{10,15})/);
+    if (match && match[1]) {
+      console.log(`[✓] Nomor dari regex match: ${match[1]}`);
+      return match[1];
+    }
+
+    return null;
   } catch (error) {
     console.error('[!] Error ekstrak nomor:', error.message);
     return null;
@@ -61,8 +84,8 @@ function isPersonalChat(jid) {
     return false;
   }
   
-  // Hanya terima format nomor pribadi
-  return jid.endsWith('@s.whatsapp.net');
+  // Terima format nomor pribadi ATAU format @lid (untuk kompatibilitas)
+  return jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid');
 }
 
 // ✅ Fungsi untuk mendapatkan nama kontak
@@ -127,11 +150,12 @@ async function connectToWhatsApp() {
       }
 
       // ✅ VALIDASI 2: Ekstrak nomor HP yang valid
-      const phoneNumber = extractPhoneNumber(jid);
+      const phoneNumber = extractPhoneNumber(jid, msg);
       if (!phoneNumber) {
         console.warn(`[!] Gagal ekstrak nomor HP dari JID: ${jid}`);
+        console.warn(`[!] Message key:`, JSON.stringify(msg.key, null, 2));
         await sock.sendMessage(jid, { 
-          text: '⚠️ Maaf, sistem tidak dapat mendeteksi nomor HP Anda. Pastikan Anda menggunakan nomor WhatsApp yang valid.' 
+          text: '⚠️ Maaf, sistem tidak dapat mendeteksi nomor HP Anda. Pastikan Anda menggunakan nomor WhatsApp yang valid.\n\nJika masalah berlanjut, coba kirim ulang pesan Anda.' 
         });
         return;
       }
