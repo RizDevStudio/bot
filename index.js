@@ -20,6 +20,38 @@ if (!fs.existsSync(authFolder)) {
   fs.mkdirSync(authFolder, { recursive: true });
 }
 
+// ✅ Track kontak yang sudah pernah chat (di-reset saat bot restart)
+const contactedUsers = new Set();
+
+// ✅ File untuk persist contacted users (opsional, bisa di-comment jika tidak perlu)
+const contactedUsersFile = path.join(__dirname, 'contacted_users.json');
+
+// Load contacted users dari file saat startup
+function loadContactedUsers() {
+  try {
+    if (fs.existsSync(contactedUsersFile)) {
+      const data = fs.readFileSync(contactedUsersFile, 'utf8');
+      const users = JSON.parse(data);
+      users.forEach(user => contactedUsers.add(user));
+      console.log(`📋 Loaded ${contactedUsers.size} contacted users from file`);
+    }
+  } catch (error) {
+    console.log('⚠️  Could not load contacted users file:', error.message);
+  }
+}
+
+// Save contacted users ke file
+function saveContactedUsers() {
+  try {
+    fs.writeFileSync(contactedUsersFile, JSON.stringify([...contactedUsers]), 'utf8');
+  } catch (error) {
+    console.error('⚠️  Could not save contacted users:', error.message);
+  }
+}
+
+// Auto-save setiap 5 menit
+setInterval(saveContactedUsers, 5 * 60 * 1000);
+
 // ✅ Validasi format nomor HP
 function validatePhoneNumber(phone) {
   // Hapus spasi, dash, plus jika ada
@@ -85,6 +117,9 @@ function isPersonalChat(jid) {
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
   const { version } = await fetchLatestBaileysVersion();
+
+  // Load contacted users saat startup
+  loadContactedUsers();
 
   const sock = makeWASocket({
     auth: state,
@@ -189,7 +224,10 @@ async function connectToWhatsApp() {
 
       // ✅ CEK FORMAT ABSENSI
       if (!text.toUpperCase().startsWith('ABSENSI#')) {
-        const welcomeMsg = `Halo *${senderName}* 👋
+        // ✅ Cek apakah user ini sudah pernah chat sebelumnya
+        if (!contactedUsers.has(jid)) {
+          // User baru, kirim welcome message
+          const welcomeMsg = `Halo *${senderName}* 👋
 
 Selamat datang di *Layanan Absensi SMK N 4 Bandar Lampung*
 
@@ -200,7 +238,7 @@ ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
 
 📝 *Contoh:*
 \`\`\`
-ABSENSI#12346785921#Budi Susanto#6281234567890
+ABSENSI#1234567890#Budi Susanto#6281234567890
 \`\`\`
 
 ⚠️ *Perhatian:*
@@ -214,10 +252,32 @@ Notifikasi absensi akan dikirim ke nomor HP yang didaftarkan.
 
 Jika ada pertanyaan, hubungi admin sekolah.
 Terima kasih! 🙏`;
-        
-        await sock.sendMessage(jid, { text: welcomeMsg });
-        console.log(`   → Mengirim pesan welcome\n`);
+          
+          await sock.sendMessage(jid, { text: welcomeMsg });
+          console.log(`   → Mengirim welcome message (user baru)\n`);
+          
+          // Tandai user sudah pernah chat
+          contactedUsers.add(jid);
+          saveContactedUsers();
+        } else {
+          // User lama, kirim pesan singkat
+          const reminderMsg = `Gunakan format:
+\`\`\`
+ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
+\`\`\`
+
+Contoh: \`ABSENSI#1234567890#Budi Susanto#6281234567890\``;
+          
+          await sock.sendMessage(jid, { text: reminderMsg });
+          console.log(`   → Mengirim reminder (user lama)\n`);
+        }
         return;
+      }
+
+      // ✅ Tandai user sudah pernah chat (jika belum)
+      if (!contactedUsers.has(jid)) {
+        contactedUsers.add(jid);
+        saveContactedUsers();
       }
 
       // ✅ PARSE FORMAT
@@ -248,7 +308,7 @@ Anda mengirim ${parts.length} bagian, seharusnya 4 bagian.`;
       // ✅ VALIDASI NISN
       const nisnCheck = validateNISN(nisnRaw);
       if (!nisnCheck.valid) {
-        await sock.sendMessage(jid, { text: `❌ ${nisnCheck.error}\n\nContoh NISN yang benar: 00812346754` });
+        await sock.sendMessage(jid, { text: `❌ ${nisnCheck.error}\n\nContoh NISN yang benar: 1234567890` });
         console.log(`   → Validasi NISN gagal: ${nisnCheck.error}\n`);
         return;
       }
@@ -387,11 +447,13 @@ Jika ini bukan Anda atau ada kesalahan, hubungi admin sekolah.`;
 // Graceful shutdown
 process.on('SIGINT', () => {
   console.log('\n\n⚠️  Mematikan bot...');
+  saveContactedUsers(); // Save sebelum exit
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('\n\n⚠️  Mematikan bot...');
+  saveContactedUsers(); // Save sebelum exit
   process.exit(0);
 });
 
