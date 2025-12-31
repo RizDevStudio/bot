@@ -27,6 +27,7 @@ async function connectToWhatsApp() {
 
   const sock = makeWASocket({
     auth: state,
+    // ❌ HAPUS printQRInTerminal (sudah tidak berfungsi)
     syncFullBookmarks: false,
     markOnline: false,
     generateHighQualityLinkPreview: false,
@@ -72,58 +73,46 @@ async function connectToWhatsApp() {
       text = msg.message.extendedTextMessage.text;
     }
 
-    // Jika format sesuai ABSENSI#... → proses seperti biasa
-    if (text.trim().startsWith('ABSENSI#')) {
-      const parts = text.split('#');
-      if (parts.length !== 3) {
-        await sock.sendMessage(jid, { text: '❌ Format salah. Contoh: ABSENSI#0012345678#Budi Santoso' });
-        return;
-      }
+    if (!text.trim().startsWith('ABSENSI#')) {
+      await sock.sendMessage(jid, { text: '❌ Format salah. Gunakan: ABSENSI#NISN#NAMA_ORANG_TUA' });
+      return;
+    }
 
-      const [, nisn, nama_orang_tua] = parts;
-      const no_hp = jid.replace(/@s\.whatsapp\.net/g, '');
+    const parts = text.split('#');
+    if (parts.length !== 3) {
+      await sock.sendMessage(jid, { text: '❌ Format salah. Contoh: ABSENSI#0012345678#Budi Santoso' });
+      return;
+    }
 
-      if (!nisn || !nama_orang_tua || nisn.length < 5) {
-        await sock.sendMessage(jid, { text: '❌ NISN atau nama tidak valid.' });
-        return;
-      }
+    const [, nisn, nama_orang_tua] = parts;
+    const no_hp = jid.replace(/@s\.whatsapp\.net/g, '');
 
-      try {
-        const response = await axios.post(API_URL, {
-          nisn: nisn.trim(),
-          nama_orang_tua: nama_orang_tua.trim(),
-          no_hp: no_hp
-        }, {
-          headers: {
-            'Authorization': `Bearer ${API_SECRET}`,
-            'Content-Type': 'application/json'
-          }
-        });
+    if (!nisn || !nama_orang_tua || nisn.length < 5) {
+      await sock.sendMessage(jid, { text: '❌ NISN atau nama tidak valid.' });
+      return;
+    }
 
-        if (response.data.success) {
-          await sock.sendMessage(jid, { text: '✅ Data orang tua berhasil didaftarkan!' });
-          console.log(`[+] Berhasil: ${nama_orang_tua} (${nisn}) - ${no_hp}`);
-        } else {
-          throw new Error(response.data.message || 'Gagal di backend');
+    try {
+      const response = await axios.post(API_URL, {
+        nisn: nisn.trim(),
+        nama_orang_tua: nama_orang_tua.trim(),
+        no_hp: no_hp
+      }, {
+        headers: {
+          'Authorization': `Bearer ${API_SECRET}`,
+          'Content-Type': 'application/json'
         }
-      } catch (error) {
-        console.error('[!] Error kirim ke Laravel:', error.message);
-        await sock.sendMessage(jid, { text: '⚠️ Gagal menyimpan data. Coba lagi nanti.' });
+      });
+
+      if (response.data.success) {
+        await sock.sendMessage(jid, { text: '✅ Data orang tua berhasil didaftarkan!' });
+        console.log(`[+] Berhasil: ${nama_orang_tua} (${nisn}) - ${no_hp}`);
+      } else {
+        throw new Error(response.data.message || 'Gagal di backend');
       }
-    } 
-    // Jika BUKAN format ABSENSI#... → kirim pesan sambutan
-    else {
-      const welcomeMessage = `Halo, ini adalah layanan otomatis Absensi SMK N 4 Bandar Lampung
-
-Jika belum pernah mendaftarkan nomor silahkan ketik :
-
-ABSENSI#NISN#NAMA_ORANG_TUA_SISWA
-
-untuk mendaftarkan nomor.
-
-Terimakasih`;
-
-      await sock.sendMessage(jid, { text: welcomeMessage });
+    } catch (error) {
+      console.error('[!] Error kirim ke Laravel:', error.message);
+      await sock.sendMessage(jid, { text: '⚠️ Gagal menyimpan data. Coba lagi nanti.' });
     }
   });
 
