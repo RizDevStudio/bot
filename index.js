@@ -95,7 +95,7 @@ async function connectToWhatsApp() {
     printQRInTerminal: false,
   });
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
@@ -106,13 +106,38 @@ async function connectToWhatsApp() {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      const errorMessage = lastDisconnect?.error?.message || '';
+      
       console.log(`🔌 Koneksi ditutup. Status: ${statusCode}`);
+      console.log(`   Error: ${errorMessage}`);
+      
+      // Handle Bad MAC error - reset session
+      if (errorMessage.includes('Bad MAC') || statusCode === 440) {
+        console.log('\n⚠️  Detected Bad MAC error - Session corrupted');
+        console.log('🔄 Resetting session...\n');
+        
+        // Hapus session yang corrupt
+        try {
+          const authPath = path.join(__dirname, 'baileys_auth');
+          if (fs.existsSync(authPath)) {
+            fs.rmSync(authPath, { recursive: true, force: true });
+            console.log('✓ Session cleared');
+          }
+        } catch (err) {
+          console.error('Error clearing session:', err.message);
+        }
+        
+        console.log('🔁 Restarting... Please scan QR code again\n');
+        setTimeout(connectToWhatsApp, 2000);
+        return;
+      }
+      
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
-        console.log('🔁 Reconnecting...');
+        console.log('🔁 Reconnecting in 3s...');
         setTimeout(connectToWhatsApp, 3000);
       } else {
-        console.log('❌ Bot logged out. Hapus folder baileys_auth untuk login ulang.');
+        console.log('❌ Bot logged out. Restart aplikasi untuk login ulang.');
       }
     } else if (connection === 'open') {
       console.log('✅ WhatsApp terhubung! Siap menerima pesan...\n');
@@ -349,7 +374,10 @@ Jika ini bukan Anda atau ada kesalahan, hubungi admin sekolah.`;
 
     } catch (error) {
       console.error('\n💥 [HANDLER ERROR]', error.message);
-      console.error(error.stack);
+      // Jangan log full stack untuk production, cukup message
+      if (process.env.NODE_ENV === 'development') {
+        console.error(error.stack);
+      }
     }
   });
 
