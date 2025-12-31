@@ -1,4 +1,4 @@
-// index.js
+// index.js - Manual Phone Number Version
 const { 
   default: makeWASocket, 
   useMultiFileAuthState, 
@@ -20,6 +20,68 @@ if (!fs.existsSync(authFolder)) {
   fs.mkdirSync(authFolder, { recursive: true });
 }
 
+// ✅ Validasi format nomor HP
+function validatePhoneNumber(phone) {
+  // Hapus spasi, dash, plus jika ada
+  const cleaned = phone.replace(/[\s\-\+]/g, '');
+  
+  // Harus angka saja, 10-15 digit
+  if (!/^\d{10,15}$/.test(cleaned)) {
+    return { valid: false, error: 'Nomor HP harus 10-15 digit angka' };
+  }
+  
+  // Validasi prefix Indonesia (62 atau 0)
+  if (!cleaned.startsWith('62') && !cleaned.startsWith('0')) {
+    return { valid: false, error: 'Nomor HP harus diawali 62 atau 0' };
+  }
+  
+  // Normalisasi ke format 62
+  let normalized = cleaned;
+  if (normalized.startsWith('0')) {
+    normalized = '62' + normalized.substring(1);
+  }
+  
+  return { valid: true, phone: normalized };
+}
+
+// ✅ Validasi NISN
+function validateNISN(nisn) {
+  const cleaned = nisn.trim();
+  
+  if (cleaned.length < 5) {
+    return { valid: false, error: 'NISN minimal 5 digit' };
+  }
+  
+  if (!/^\d+$/.test(cleaned)) {
+    return { valid: false, error: 'NISN harus berupa angka' };
+  }
+  
+  return { valid: true, nisn: cleaned };
+}
+
+// ✅ Validasi nama
+function validateName(name) {
+  const cleaned = name.trim();
+  
+  if (cleaned.length < 3) {
+    return { valid: false, error: 'Nama minimal 3 karakter' };
+  }
+  
+  if (cleaned.length > 100) {
+    return { valid: false, error: 'Nama maksimal 100 karakter' };
+  }
+  
+  return { valid: true, name: cleaned };
+}
+
+// ✅ Cek apakah chat pribadi
+function isPersonalChat(jid) {
+  if (!jid) return false;
+  return !jid.includes('@g.us') && 
+         !jid.includes('@broadcast') && 
+         !jid.includes('@newsletter');
+}
+
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
   const { version } = await fetchLatestBaileysVersion();
@@ -30,13 +92,14 @@ async function connectToWhatsApp() {
     markOnline: false,
     generateHighQualityLinkPreview: false,
     version,
+    printQRInTerminal: false,
   });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log('\n📝 [QR CODE] Scan kode berikut dengan WhatsApp kamu:\n');
+      console.log('\n📝 [QR CODE] Scan kode berikut dengan WhatsApp:\n');
       qrcode.generate(qr, { small: true });
       console.log('\n');
     }
@@ -44,107 +107,281 @@ async function connectToWhatsApp() {
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log(`🔌 Koneksi ditutup. Alasan: ${statusCode}`);
+      console.log(`🔌 Koneksi ditutup. Status: ${statusCode}`);
       if (shouldReconnect) {
-        console.log('🔁 Mencoba menyambung ulang...');
+        console.log('🔁 Reconnecting...');
         setTimeout(connectToWhatsApp, 3000);
+      } else {
+        console.log('❌ Bot logged out. Hapus folder baileys_auth untuk login ulang.');
       }
     } else if (connection === 'open') {
-      console.log('✅ WhatsApp terhubung! Menunggu pesan...\n');
+      console.log('✅ WhatsApp terhubung! Siap menerima pesan...\n');
+      console.log(`📱 Bot Number: ${sock.user?.id || 'Unknown'}\n`);
+      console.log('=' .repeat(60));
     }
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  // Tangani pesan masuk
   sock.ev.on('messages.upsert', async (m) => {
-    const msg = m.messages[0];
-    if (!msg.message || msg.key.fromMe) return;
-    const jid = msg.key.remoteJid;
-    if (!jid || jid.includes('@g.us')) return; // abaikan grup
+    try {
+      const msg = m.messages[0];
+      
+      // Abaikan pesan dari bot sendiri atau pesan kosong
+      if (!msg.message || msg.key.fromMe) return;
+      
+      const jid = msg.key.remoteJid;
 
-    let text = '';
-    if (msg.message.conversation) {
-      text = msg.message.conversation;
-    } else if (msg.message.extendedTextMessage?.text) {
-      text = msg.message.extendedTextMessage.text;
-    }
+      // Hanya terima chat pribadi
+      if (!isPersonalChat(jid)) {
+        console.log(`[!] Pesan dari non-personal chat diabaikan: ${jid}`);
+        return;
+      }
 
-    // Tampilkan sambutan jika bukan format ABSENSI
-    if (!text.trim().startsWith('ABSENSI#')) {
-      const welcomeMessage = `Halo, ini adalah layanan otomatis Absensi SMK N 4 Bandar Lampung
+      // Ekstrak teks pesan
+      let text = '';
+      if (msg.message.conversation) {
+        text = msg.message.conversation;
+      } else if (msg.message.extendedTextMessage?.text) {
+        text = msg.message.extendedTextMessage.text;
+      } else if (msg.message.imageMessage?.caption) {
+        text = msg.message.imageMessage.caption;
+      } else if (msg.message.videoMessage?.caption) {
+        text = msg.message.videoMessage.caption;
+      }
 
-Jika belum pernah mendaftarkan nomor silahkan ketik :
+      text = text.trim();
+      if (!text) return;
 
-ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP_ORANG_TUA
+      // Info pengirim
+      const senderName = msg.pushName || 'User';
+      const timestamp = new Date().toLocaleString('id-ID');
+      
+      console.log(`\n📨 [${timestamp}]`);
+      console.log(`   Dari: ${senderName}`);
+      console.log(`   JID: ${jid}`);
+      console.log(`   Pesan: ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}`);
+
+      // ✅ CEK FORMAT ABSENSI
+      if (!text.toUpperCase().startsWith('ABSENSI#')) {
+        const welcomeMsg = `Halo *${senderName}* 👋
+
+Selamat datang di *Layanan Absensi SMK N 4 Bandar Lampung*
+
+📋 *Format Pendaftaran:*
+\`\`\`
+ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
+\`\`\`
+
+📝 *Contoh:*
+\`\`\`
+ABSENSI#0085517246#Syarif Hidayat#6281234567890
+\`\`\`
+
+⚠️ *Perhatian:*
+• NISN: 10 digit nomor induk siswa
+• Nama: Nama lengkap orang tua/wali
+• Nomor HP: Format 62xxx atau 08xxx
+• Pisahkan dengan tanda #
+• Tanpa spasi di awal/akhir
+
+Notifikasi absensi akan dikirim ke nomor HP yang didaftarkan.
+
+Jika ada pertanyaan, hubungi admin sekolah.
+Terima kasih! 🙏`;
+        
+        await sock.sendMessage(jid, { text: welcomeMsg });
+        console.log(`   → Mengirim pesan welcome\n`);
+        return;
+      }
+
+      // ✅ PARSE FORMAT
+      const parts = text.split('#');
+      
+      if (parts.length !== 4) {
+        const errorMsg = `❌ *Format Salah!*
+
+Format yang benar:
+\`\`\`
+ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
+\`\`\`
 
 Contoh:
-ABSENSI#0085517246#Siti Aminah#6281234567890
+\`\`\`
+ABSENSI#0085517246#Syarif Hidayat#6281234567890
+\`\`\`
 
-Pastikan NOMOR_HP diawali 62 (tanpa tanda + atau 0).
-
-Terimakasih`;
-      await sock.sendMessage(jid, { text: welcomeMessage });
-      return;
-    }
-
-    const parts = text.split('#');
-    if (parts.length !== 4) {
-      await sock.sendMessage(jid, { 
-        text: '❌ Format salah.\n\nContoh yang benar:\nABSENSI#0085517246#Siti Aminah#6281234567890' 
-      });
-      return;
-    }
-
-    const [, nisn, nama_orang_tua, no_hp_input] = parts;
-
-    // Validasi dasar
-    if (!nisn || !nama_orang_tua || !no_hp_input) {
-      await sock.sendMessage(jid, { text: '❌ Semua bagian wajib diisi.' });
-      return;
-    }
-
-    // Validasi NISN: hanya angka, min 5 digit
-    if (!/^\d{5,20}$/.test(nisn.trim())) {
-      await sock.sendMessage(jid, { text: '❌ NISN harus berupa angka (5-20 digit).' });
-      return;
-    }
-
-    // Validasi nomor HP: mulai 62, hanya angka, panjang 10-14
-    const no_hp = no_hp_input.trim();
-    if (!/^628\d{8,12}$/.test(no_hp)) {
-      await sock.sendMessage(jid, { 
-        text: '❌ Format nomor HP salah.\n\nContoh: 6281234567890 (diawali 62, tanpa + atau 0)' 
-      });
-      return;
-    }
-
-    try {
-      const response = await axios.post(API_URL, {
-        nisn: nisn.trim(),
-        nama_orang_tua: nama_orang_tua.trim(),
-        no_hp: no_hp
-      }, {
-        headers: {
-          'Authorization': `Bearer ${API_SECRET}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (response.data.success) {
-        await sock.sendMessage(jid, { text: '✅ Data orang tua berhasil didaftarkan!' });
-        console.log(`[+] Berhasil: ${nama_orang_tua} (${nisn}) - ${no_hp}`);
-      } else {
-        throw new Error(response.data.message || 'Gagal di backend');
+Anda mengirim ${parts.length} bagian, seharusnya 4 bagian.`;
+        
+        await sock.sendMessage(jid, { text: errorMsg });
+        console.log(`   → Format salah (${parts.length} bagian)\n`);
+        return;
       }
+
+      const [, nisnRaw, namaRaw, phoneRaw] = parts;
+
+      // ✅ VALIDASI NISN
+      const nisnCheck = validateNISN(nisnRaw);
+      if (!nisnCheck.valid) {
+        await sock.sendMessage(jid, { text: `❌ ${nisnCheck.error}\n\nContoh NISN yang benar: 0085517246` });
+        console.log(`   → Validasi NISN gagal: ${nisnCheck.error}\n`);
+        return;
+      }
+
+      // ✅ VALIDASI NAMA
+      const nameCheck = validateName(namaRaw);
+      if (!nameCheck.valid) {
+        await sock.sendMessage(jid, { text: `❌ ${nameCheck.error}\n\nContoh nama yang benar: Budi Santoso` });
+        console.log(`   → Validasi nama gagal: ${nameCheck.error}\n`);
+        return;
+      }
+
+      // ✅ VALIDASI NOMOR HP
+      const phoneCheck = validatePhoneNumber(phoneRaw);
+      if (!phoneCheck.valid) {
+        await sock.sendMessage(jid, { 
+          text: `❌ ${phoneCheck.error}
+
+Contoh nomor yang benar:
+• 6281234567890
+• 081234567890
+• 62-812-3456-7890
+
+Nomor akan dinormalisasi ke format 62xxx` 
+        });
+        console.log(`   → Validasi nomor gagal: ${phoneCheck.error}\n`);
+        return;
+      }
+
+      const nisn = nisnCheck.nisn;
+      const nama_orang_tua = nameCheck.name;
+      const no_hp = phoneCheck.phone;
+
+      console.log(`\n[→] MEMPROSES PENDAFTARAN`);
+      console.log(`    NISN: ${nisn}`);
+      console.log(`    Nama: ${nama_orang_tua}`);
+      console.log(`    No HP: ${no_hp}`);
+
+      // Kirim indikator mengetik
+      await sock.sendPresenceUpdate('composing', jid);
+
+      // ✅ KIRIM KE API
+      try {
+        const response = await axios.post(API_URL, {
+          nisn,
+          nama_orang_tua,
+          no_hp
+        }, {
+          headers: {
+            'Authorization': `Bearer ${API_SECRET}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 15000
+        });
+
+        await sock.sendPresenceUpdate('paused', jid);
+
+        if (response.data.success) {
+          const successMsg = `✅ *PENDAFTARAN BERHASIL!*
+
+📋 *Data Terdaftar:*
+━━━━━━━━━━━━━━━━━━━━━
+👤 Nama: ${nama_orang_tua}
+🎓 NISN: ${nisn}
+📱 No HP: ${no_hp}
+━━━━━━━━━━━━━━━━━━━━━
+
+✓ Nomor HP telah diverifikasi
+✓ Notifikasi absensi akan dikirim ke nomor ini
+
+Terima kasih sudah mendaftar! 🙏`;
+          
+          await sock.sendMessage(jid, { text: successMsg });
+          
+          console.log(`[✓] BERHASIL REGISTRASI`);
+          console.log(`    → Data tersimpan di database`);
+          console.log(`    → Notifikasi akan dikirim ke: ${no_hp}\n`);
+          console.log('=' .repeat(60));
+        } else {
+          throw new Error(response.data.message || 'Gagal di backend');
+        }
+
+      } catch (error) {
+        await sock.sendPresenceUpdate('paused', jid);
+        
+        let errorMsg = '⚠️ *GAGAL MENYIMPAN DATA*\n\n';
+        
+        if (error.response) {
+          const status = error.response.status;
+          const message = error.response.data?.message || '';
+          
+          console.log(`[✗] API Error - Status: ${status}`);
+          console.log(`    Message: ${message}`);
+          
+          if (status === 409 || message.toLowerCase().includes('sudah terdaftar')) {
+            errorMsg += `📌 Data sudah terdaftar sebelumnya:
+• NISN: ${nisn}
+• Nama: ${nama_orang_tua}
+• No HP: ${no_hp}
+
+Jika ini bukan Anda atau ada kesalahan, hubungi admin sekolah.`;
+          } else if (status === 401 || status === 403) {
+            errorMsg += `🔒 Autentikasi gagal.\nSilakan hubungi admin sistem.`;
+          } else if (status === 400) {
+            errorMsg += `📝 Data tidak valid:\n${message}\n\nPastikan format sudah benar.`;
+          } else {
+            errorMsg += `💬 ${message}\n\nJika masalah berlanjut, hubungi admin.`;
+          }
+        } else if (error.code === 'ECONNREFUSED') {
+          errorMsg += `🔌 Server tidak dapat dihubungi.\nSilakan coba beberapa saat lagi.`;
+          console.log(`[✗] Connection refused`);
+        } else if (error.code === 'ETIMEDOUT') {
+          errorMsg += `⏱️ Request timeout.\nServer membutuhkan waktu terlalu lama.\nSilakan coba lagi.`;
+          console.log(`[✗] Timeout`);
+        } else {
+          errorMsg += `❌ Terjadi kesalahan sistem.\nSilakan coba lagi dalam beberapa menit.`;
+          console.log(`[✗] Error: ${error.message}`);
+        }
+        
+        await sock.sendMessage(jid, { text: errorMsg });
+        console.log('=' .repeat(60));
+      }
+
     } catch (error) {
-      console.error('[!] Error kirim ke Laravel:', error.message);
-      await sock.sendMessage(jid, { text: '⚠️ Gagal menyimpan data. Coba lagi nanti.' });
+      console.error('\n💥 [HANDLER ERROR]', error.message);
+      console.error(error.stack);
     }
   });
 
   return sock;
 }
 
-console.log('🚀 Memulai WhatsApp Bot...');
-connectToWhatsApp().catch(console.error);
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n\n⚠️  Mematikan bot...');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n\n⚠️  Mematikan bot...');
+  process.exit(0);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('\n💥 Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('\n💥 Unhandled Rejection:', error);
+});
+
+// Start
+console.log('╔════════════════════════════════════════════════════════╗');
+console.log('║     WhatsApp Bot - Absensi SMK N 4 Bandar Lampung     ║');
+console.log('╚════════════════════════════════════════════════════════╝');
+console.log('\n🚀 Memulai bot...\n');
+
+connectToWhatsApp().catch((error) => {
+  console.error('💥 Fatal error:', error);
+  process.exit(1);
+});
