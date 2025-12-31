@@ -27,7 +27,6 @@ async function connectToWhatsApp() {
 
   const sock = makeWASocket({
     auth: state,
-    // ❌ HAPUS printQRInTerminal (sudah tidak berfungsi)
     syncFullBookmarks: false,
     markOnline: false,
     generateHighQualityLinkPreview: false,
@@ -37,7 +36,6 @@ async function connectToWhatsApp() {
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // 🔑 Tampilkan QR secara manual
     if (qr) {
       console.log('\n📝 [QR CODE] Scan kode berikut dengan WhatsApp kamu:\n');
       qrcode.generate(qr, { small: true });
@@ -64,7 +62,15 @@ async function connectToWhatsApp() {
     const msg = m.messages[0];
     if (!msg.message || msg.key.fromMe) return;
     const jid = msg.key.remoteJid;
-    if (!jid || jid.includes('@g.us')) return;
+
+    // ✅ PERBAIKAN: Hanya terima pesan dari nomor pribadi (format: 6281234567890@s.whatsapp.net)
+    if (!jid || 
+        jid.includes('@g.us') ||           // grup
+        jid.includes('@broadcast') ||      // broadcast
+        !jid.endsWith('@s.whatsapp.net')) { // bukan nomor pribadi (misal: @lid)
+      console.warn(`[!] Pesan ditolak dari JID tidak valid: ${jid}`);
+      return;
+    }
 
     let text = '';
     if (msg.message.conversation) {
@@ -73,8 +79,18 @@ async function connectToWhatsApp() {
       text = msg.message.extendedTextMessage.text;
     }
 
+    // Tampilkan sambutan jika bukan format ABSENSI
     if (!text.trim().startsWith('ABSENSI#')) {
-      await sock.sendMessage(jid, { text: '❌ Format salah. Gunakan: ABSENSI#NISN#NAMA_ORANG_TUA' });
+      const welcomeMessage = `Halo, ini adalah layanan otomatis Absensi SMK N 4 Bandar Lampung
+
+Jika belum pernah mendaftarkan nomor silahkan ketik :
+
+ABSENSI#NISN#NAMA_ORANG_TUA_SISWA
+
+untuk mendaftarkan nomor.
+
+Terimakasih`;
+      await sock.sendMessage(jid, { text: welcomeMessage });
       return;
     }
 
@@ -85,7 +101,8 @@ async function connectToWhatsApp() {
     }
 
     const [, nisn, nama_orang_tua] = parts;
-    const no_hp = jid.replace(/@s\.whatsapp\.net/g, '');
+    // ✅ PERBAIKAN: Sekarang jid PASTI berakhir dengan @s.whatsapp.net
+    const no_hp = jid.replace('@s.whatsapp.net', '');
 
     if (!nisn || !nama_orang_tua || nisn.length < 5) {
       await sock.sendMessage(jid, { text: '❌ NISN atau nama tidak valid.' });
