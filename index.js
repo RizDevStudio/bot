@@ -4,7 +4,6 @@ const {
   useMultiFileAuthState, 
   DisconnectReason,
   fetchLatestBaileysVersion,
-  makeInMemoryStore,
   jidNormalizedUser
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
@@ -66,31 +65,14 @@ function isPersonalChat(jid) {
   return jid.endsWith('@s.whatsapp.net');
 }
 
-// ✅ Fungsi untuk mendapatkan nama kontak dari Baileys
-async function getContactName(sock, jid) {
-  try {
-    const contact = await sock.onWhatsApp(jid);
-    if (contact && contact[0]) {
-      return contact[0].notify || contact[0].name || null;
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
+// ✅ Fungsi untuk mendapatkan nama kontak
+function getContactName(msg) {
+  return msg.pushName || msg.verifiedBizName || 'Unknown';
 }
 
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
   const { version } = await fetchLatestBaileysVersion();
-
-  // ✅ Buat in-memory store untuk menyimpan metadata kontak
-  const store = makeInMemoryStore({});
-  store.readFromFile('./baileys_store.json');
-  
-  // Simpan store setiap 10 detik
-  setInterval(() => {
-    store.writeToFile('./baileys_store.json');
-  }, 10000);
 
   const sock = makeWASocket({
     auth: state,
@@ -100,9 +82,6 @@ async function connectToWhatsApp() {
     version,
     printQRInTerminal: false, // Kita pakai qrcode-terminal sendiri
   });
-
-  // ✅ Bind store ke socket
-  store.bind(sock.ev);
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
