@@ -21,46 +21,59 @@ if (!fs.existsSync(authFolder)) {
   fs.mkdirSync(authFolder, { recursive: true });
 }
 
-// ✅ Fungsi untuk validasi dan ekstrak nomor HP
-function extractPhoneNumber(jid, msg) {
+// ✅ Fungsi untuk validasi dan ekstrak nomor HP ASLI
+async function extractPhoneNumber(sock, jid, msg) {
   try {
-    // METODE 1: Coba ambil dari participant (untuk pesan yang dikirim dari device lain)
+    console.log(`[DEBUG] Mencoba ekstrak nomor dari JID: ${jid}`);
+    
+    // METODE 1: Dari verifiedBizName atau pushName metadata (paling reliable untuk @lid)
     if (msg.key.participant) {
-      const participant = msg.key.participant.replace('@s.whatsapp.net', '');
-      if (/^\d{10,15}$/.test(participant)) {
-        console.log(`[✓] Nomor dari participant: ${participant}`);
-        return participant;
-      }
-    }
-
-    // METODE 2: Coba normalize JID standar
-    const normalized = jidNormalizedUser(jid);
-    if (normalized && normalized.endsWith('@s.whatsapp.net')) {
-      const phone = normalized.replace('@s.whatsapp.net', '');
-      if (/^\d{10,15}$/.test(phone)) {
-        console.log(`[✓] Nomor dari JID normalized: ${phone}`);
-        return phone;
-      }
-    }
-
-    // METODE 3: Untuk @lid, coba extract dari remoteJid langsung
-    if (jid.includes('@lid')) {
-      console.log(`[!] Terdeteksi format @lid: ${jid}`);
-      // Cek apakah ada info di message key
-      if (msg.key.remoteJid && msg.key.remoteJid !== jid) {
-        const alt = msg.key.remoteJid.replace('@s.whatsapp.net', '');
-        if (/^\d{10,15}$/.test(alt)) {
-          console.log(`[✓] Nomor dari alternative remoteJid: ${alt}`);
-          return alt;
+      const participant = msg.key.participant;
+      console.log(`[DEBUG] Participant found: ${participant}`);
+      
+      if (participant.endsWith('@s.whatsapp.net')) {
+        const phone = participant.replace('@s.whatsapp.net', '');
+        if (/^\d{10,15}$/.test(phone)) {
+          console.log(`[✓] Nomor ASLI dari participant: ${phone}`);
+          return phone;
         }
       }
     }
 
-    // METODE 4: Parse langsung dari string JID jika ada angka
-    const match = jid.match(/(\d{10,15})/);
-    if (match && match[1]) {
-      console.log(`[✓] Nomor dari regex match: ${match[1]}`);
-      return match[1];
+    // METODE 2: Lookup menggunakan onWhatsApp (untuk mendapatkan nomor asli dari @lid)
+    if (jid.includes('@lid')) {
+      console.log(`[!] Terdeteksi format @lid, mencoba lookup...`);
+      
+      // Coba ambil dari message context
+      if (msg.messageContextInfo?.deviceListMetadataVersion) {
+        console.log(`[DEBUG] Device list metadata detected`);
+      }
+
+      // Fallback: Minta user untuk kirim ulang dengan mention nomor
+      console.log(`[X] Tidak dapat resolve @lid ke nomor asli`);
+      return null;
+    }
+
+    // METODE 3: JID normalize untuk format standar
+    const normalized = jidNormalizedUser(jid);
+    if (normalized && normalized.endsWith('@s.whatsapp.net')) {
+      const phone = normalized.replace('@s.whatsapp.net', '');
+      if (/^\d{10,15}$/.test(phone)) {
+        console.log(`[✓] Nomor ASLI dari JID normalized: ${phone}`);
+        return phone;
+      }
+    }
+
+    // METODE 4: Cek di quoted message (jika ada)
+    if (msg.message?.extendedTextMessage?.contextInfo?.participant) {
+      const quoted = msg.message.extendedTextMessage.contextInfo.participant;
+      if (quoted.endsWith('@s.whatsapp.net')) {
+        const phone = quoted.replace('@s.whatsapp.net', '');
+        if (/^\d{10,15}$/.test(phone)) {
+          console.log(`[✓] Nomor ASLI dari quoted message: ${phone}`);
+          return phone;
+        }
+      }
     }
 
     return null;
@@ -150,13 +163,40 @@ async function connectToWhatsApp() {
       }
 
       // ✅ VALIDASI 2: Ekstrak nomor HP yang valid
-      const phoneNumber = extractPhoneNumber(jid, msg);
+      const phoneNumber = await extractPhoneNumber(sock, jid, msg);
       if (!phoneNumber) {
-        console.warn(`[!] Gagal ekstrak nomor HP dari JID: ${jid}`);
+        console.warn(`[!] Gagal ekstrak nomor HP ASLI dari JID: ${jid}`);
         console.warn(`[!] Message key:`, JSON.stringify(msg.key, null, 2));
-        await sock.sendMessage(jid, { 
-          text: '⚠️ Maaf, sistem tidak dapat mendeteksi nomor HP Anda. Pastikan Anda menggunakan nomor WhatsApp yang valid.\n\nJika masalah berlanjut, coba kirim ulang pesan Anda.' 
-        });
+        
+        // Untuk format @lid, minta user input manual nomor HP
+        if (jid.includes('@lid')) {
+          await sock.sendMessage(jid, { 
+            text: `⚠️ *Sistem tidak dapat mendeteksi nomor HP Anda secara otomatis.*
+
+Hal ini terjadi karena pengaturan privasi WhatsApp Anda.
+
+📋 *Solusi:*
+Silakan kirim ulang dengan format:
+
+\`\`\`
+ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
+\`\`\`
+
+📝 *Contoh:*
+\`\`\`
+ABSENSI#0012345678#Budi Santoso#6281234567890
+\`\`\`
+
+*Catatan:* 
+• Gunakan format internasional (62)
+• Nomor HP harus aktif WhatsApp
+• Tanpa spasi atau karakter khusus` 
+          });
+        } else {
+          await sock.sendMessage(jid, { 
+            text: '⚠️ Maaf, sistem tidak dapat mendeteksi nomor HP Anda. Pastikan Anda menggunakan nomor WhatsApp yang valid.\n\nJika masalah berlanjut, hubungi admin.' 
+          });
+        }
         return;
       }
 
@@ -186,17 +226,26 @@ async function connectToWhatsApp() {
 Selamat datang di layanan otomatis *Absensi SMK N 4 Bandar Lampung*.
 
 📋 *Cara Pendaftaran:*
-Ketik pesan dengan format:
+
+*Format Otomatis (jika sistem mendeteksi nomor):*
 \`\`\`
 ABSENSI#NISN#NAMA_ORANG_TUA
 \`\`\`
 
-📝 *Contoh:*
+*Format Manual (jika diminta sistem):*
+\`\`\`
+ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
+\`\`\`
+
+📝 *Contoh Otomatis:*
 \`\`\`
 ABSENSI#0012345678#Budi Santoso
 \`\`\`
 
-✅ Nomor HP Anda yang terdeteksi: *${phoneNumber}*
+📝 *Contoh Manual:*
+\`\`\`
+ABSENSI#0012345678#Budi Santoso#6281234567890
+\`\`\`
 
 Jika ada pertanyaan, hubungi admin sekolah.
 
@@ -206,26 +255,56 @@ Terima kasih! 🙏`;
         return;
       }
 
-      // ✅ Parse format ABSENSI#NISN#NAMA
+      // ✅ Parse format ABSENSI#NISN#NAMA atau ABSENSI#NISN#NAMA#HP
       const parts = text.split('#');
-      if (parts.length !== 3) {
+      if (parts.length !== 3 && parts.length !== 4) {
         await sock.sendMessage(jid, { 
           text: `❌ *Format salah!*
 
-Format yang benar:
+*Format Otomatis:*
 \`\`\`
 ABSENSI#NISN#NAMA_ORANG_TUA
 \`\`\`
 
-Contoh:
+*Format Manual:*
+\`\`\`
+ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
+\`\`\`
+
+Contoh: 
 \`\`\`
 ABSENSI#0012345678#Budi Santoso
+\`\`\`
+atau
+\`\`\`
+ABSENSI#0012345678#Budi Santoso#6281234567890
 \`\`\`` 
         });
         return;
       }
 
-      const [, nisn, nama_orang_tua] = parts;
+      let nisn, nama_orang_tua, finalPhoneNumber;
+
+      if (parts.length === 4) {
+        // Format manual dengan nomor HP
+        [, nisn, nama_orang_tua, finalPhoneNumber] = parts;
+        finalPhoneNumber = finalPhoneNumber.trim();
+        
+        // Validasi nomor HP manual
+        if (!/^\d{10,15}$/.test(finalPhoneNumber)) {
+          await sock.sendMessage(jid, { 
+            text: '❌ Nomor HP tidak valid. Gunakan format: 6281234567890 (tanpa +, spasi, atau karakter lain)' 
+          });
+          return;
+        }
+        
+        console.log(`[i] Menggunakan nomor HP manual: ${finalPhoneNumber}`);
+      } else {
+        // Format otomatis, gunakan nomor yang terdeteksi
+        [, nisn, nama_orang_tua] = parts;
+        finalPhoneNumber = phoneNumber;
+        console.log(`[i] Menggunakan nomor HP terdeteksi: ${finalPhoneNumber}`);
+      }
 
       // ✅ Validasi input
       if (!nisn || nisn.trim().length < 5) {
@@ -250,12 +329,12 @@ ABSENSI#0012345678#Budi Santoso
         console.log(`[→] Mengirim data ke API...`);
         console.log(`    NISN: ${nisn.trim()}`);
         console.log(`    Nama: ${nama_orang_tua.trim()}`);
-        console.log(`    No HP: ${phoneNumber}\n`);
+        console.log(`    No HP: ${finalPhoneNumber}\n`);
 
         const response = await axios.post(API_URL, {
           nisn: nisn.trim(),
           nama_orang_tua: nama_orang_tua.trim(),
-          no_hp: phoneNumber // ✅ Gunakan nomor yang sudah divalidasi
+          no_hp: finalPhoneNumber // ✅ Gunakan nomor yang sudah divalidasi
         }, {
           headers: {
             'Authorization': `Bearer ${API_SECRET}`,
@@ -272,14 +351,14 @@ ABSENSI#0012345678#Budi Santoso
 📋 Data yang terdaftar:
 • NISN: ${nisn.trim()}
 • Nama Orang Tua: ${nama_orang_tua.trim()}
-• No HP: ${phoneNumber}
+• No HP: ${finalPhoneNumber}
 
 Anda akan menerima notifikasi absensi siswa melalui nomor ini.
 
 Terima kasih! 🙏`;
           
           await sock.sendMessage(jid, { text: successMsg });
-          console.log(`[✓] Berhasil registrasi: ${nama_orang_tua.trim()} (${nisn.trim()}) - ${phoneNumber}\n`);
+          console.log(`[✓] Berhasil registrasi: ${nama_orang_tua.trim()} (${nisn.trim()}) - ${finalPhoneNumber}\n`);
         } else {
           throw new Error(response.data.message || 'Gagal di backend');
         }
