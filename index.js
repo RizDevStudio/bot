@@ -54,10 +54,11 @@ setInterval(saveContactedUsers, 5 * 60 * 1000);
 
 // ✅ Message Queue untuk prevent spam detection
 class MessageQueue {
-  constructor(minDelay = 6000) {
+  constructor(minDelay = 15000, maxDelay = 25000) {
     this.queue = [];
     this.processing = false;
-    this.minDelay = minDelay; // Minimal 6 detik
+    this.minDelay = minDelay; // Minimal 15 detik
+    this.maxDelay = maxDelay; // Maksimal 25 detik
     this.lastSendTime = 0;
   }
 
@@ -77,10 +78,13 @@ class MessageQueue {
       const now = Date.now();
       const timeSinceLastSend = now - this.lastSendTime;
       
+      // Random delay antara min dan max untuk lebih natural
+      const randomDelay = Math.floor(Math.random() * (this.maxDelay - this.minDelay + 1)) + this.minDelay;
+      
       // Tunggu jika belum cukup delay
-      if (timeSinceLastSend < this.minDelay) {
-        const waitTime = this.minDelay - timeSinceLastSend;
-        console.log(`   ⏳ Menunggu ${Math.ceil(waitTime / 1000)}s sebelum kirim pesan (anti-spam)...`);
+      if (timeSinceLastSend < randomDelay) {
+        const waitTime = randomDelay - timeSinceLastSend;
+        console.log(`   ⏳ Menunggu ${Math.ceil(waitTime / 1000)}s sebelum kirim pesan (natural delay)...`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
       }
 
@@ -90,14 +94,16 @@ class MessageQueue {
         await item.sock.sendMessage(item.jid, item.message);
         this.lastSendTime = Date.now();
         item.resolve();
+        console.log(`   ✓ Pesan terkirim (queue tersisa: ${this.queue.length})`);
       } catch (error) {
+        console.error(`   ✗ Gagal kirim pesan: ${error.message}`);
         item.reject(error);
       }
 
-      // Tambahan delay random 1-2 detik untuk lebih natural
+      // Tambahan delay random 2-4 detik antar pesan untuk lebih natural
       if (this.queue.length > 0) {
-        const randomDelay = Math.floor(Math.random() * 1000) + 1000;
-        await new Promise(resolve => setTimeout(resolve, randomDelay));
+        const extraDelay = Math.floor(Math.random() * 2000) + 2000;
+        await new Promise(resolve => setTimeout(resolve, extraDelay));
       }
     }
 
@@ -109,8 +115,8 @@ class MessageQueue {
   }
 }
 
-// Inisialisasi message queue dengan delay 6 detik
-const messageQueue = new MessageQueue(6000);
+// Inisialisasi message queue dengan delay 15-25 detik (lebih natural)
+const messageQueue = new MessageQueue(15000, 25000);
 
 // ✅ Validasi format nomor HP
 function validatePhoneNumber(phone) {
@@ -172,6 +178,268 @@ function isPersonalChat(jid) {
   return !jid.includes('@g.us') && 
          !jid.includes('@broadcast') && 
          !jid.includes('@newsletter');
+}
+
+// ✅ Process message (untuk handle pesan baru dan history)
+async function processMessage(sock, msg) {
+  try {
+    // Abaikan pesan dari bot sendiri atau pesan kosong
+    if (!msg.message || msg.key.fromMe) return;
+    
+    const jid = msg.key.remoteJid;
+
+    // Hanya terima chat pribadi
+    if (!isPersonalChat(jid)) {
+      return;
+    }
+
+    // Ekstrak teks pesan
+    let text = '';
+    if (msg.message.conversation) {
+      text = msg.message.conversation;
+    } else if (msg.message.extendedTextMessage?.text) {
+      text = msg.message.extendedTextMessage.text;
+    } else if (msg.message.imageMessage?.caption) {
+      text = msg.message.imageMessage.caption;
+    } else if (msg.message.videoMessage?.caption) {
+      text = msg.message.videoMessage.caption;
+    }
+
+    text = text.trim();
+    if (!text) return;
+
+    // Info pengirim
+    const senderName = msg.pushName || 'User';
+    const messageTime = msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000).toLocaleString('id-ID') : 'Unknown';
+    const timestamp = new Date().toLocaleString('id-ID');
+    
+    console.log(`\n📨 [${timestamp}] (Pesan dikirim: ${messageTime})`);
+    console.log(`   Dari: ${senderName}`);
+    console.log(`   JID: ${jid}`);
+    console.log(`   Pesan: ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}`);
+
+    // ✅ CEK FORMAT ABSENSI
+    if (!text.toUpperCase().startsWith('ABSENSI#')) {
+      // ✅ Cek apakah user ini sudah pernah chat sebelumnya
+      if (!contactedUsers.has(jid)) {
+        // User baru, kirim welcome message
+        const welcomeMsg = `Halo *${senderName}* 👋
+
+Selamat datang di *Layanan Absensi SMK N 4 Bandar Lampung*
+
+📋 *Format Pendaftaran:*
+\`\`\`
+ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
+\`\`\`
+
+📝 *Contoh:*
+\`\`\`
+ABSENSI#1234567890#Budi Susanto#6281234567890
+\`\`\`
+
+⚠️ *Perhatian:*
+• NISN: 10 digit nomor induk siswa
+• Nama: Nama lengkap orang tua/wali
+• Nomor HP: Format 62xxx atau 08xxx
+• Pisahkan dengan tanda #
+• Tanpa spasi di awal/akhir
+
+Notifikasi absensi akan dikirim ke nomor HP yang didaftarkan.
+
+Jika ada pertanyaan, hubungi admin sekolah.
+Terima kasih! 🙏`;
+        
+        await messageQueue.add(sock, jid, { text: welcomeMsg });
+        console.log(`   → Welcome message ditambahkan ke queue (user baru)`);
+        console.log(`   → Queue size: ${messageQueue.getQueueSize()}`);
+        
+        // Tandai user sudah pernah chat
+        contactedUsers.add(jid);
+        saveContactedUsers();
+      } else {
+        // User lama, kirim pesan singkat
+        const reminderMsg = `Gunakan format:
+\`\`\`
+ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
+\`\`\`
+
+Contoh: \`ABSENSI#1234567890#Budi Susanto#6281234567890\``;
+        
+        await messageQueue.add(sock, jid, { text: reminderMsg });
+        console.log(`   → Reminder ditambahkan ke queue (user lama)`);
+        console.log(`   → Queue size: ${messageQueue.getQueueSize()}`);
+      }
+      return;
+    }
+
+    // ✅ Tandai user sudah pernah chat (jika belum)
+    if (!contactedUsers.has(jid)) {
+      contactedUsers.add(jid);
+      saveContactedUsers();
+    }
+
+    // ✅ PARSE FORMAT
+    const parts = text.split('#');
+    
+    if (parts.length !== 4) {
+      const errorMsg = `❌ *Format Salah!*
+
+Format yang benar:
+\`\`\`
+ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
+\`\`\`
+
+Contoh:
+\`\`\`
+ABSENSI#1234567890#Budi Susanto#6281234567890
+\`\`\`
+
+Anda mengirim ${parts.length} bagian, seharusnya 4 bagian.`;
+      
+      await messageQueue.add(sock, jid, { text: errorMsg });
+      console.log(`   → Error message ditambahkan ke queue (format salah)`);
+      console.log(`   → Queue size: ${messageQueue.getQueueSize()}`);
+      return;
+    }
+
+    const [, nisnRaw, namaRaw, phoneRaw] = parts;
+
+    // ✅ VALIDASI NISN
+    const nisnCheck = validateNISN(nisnRaw);
+    if (!nisnCheck.valid) {
+      await messageQueue.add(sock, jid, { text: `❌ ${nisnCheck.error}\n\nContoh NISN yang benar: 1234567890` });
+      console.log(`   → Validasi NISN gagal: ${nisnCheck.error}`);
+      return;
+    }
+
+    // ✅ VALIDASI NAMA
+    const nameCheck = validateName(namaRaw);
+    if (!nameCheck.valid) {
+      await messageQueue.add(sock, jid, { text: `❌ ${nameCheck.error}\n\nContoh nama yang benar: Budi Santoso` });
+      console.log(`   → Validasi nama gagal: ${nameCheck.error}`);
+      return;
+    }
+
+    // ✅ VALIDASI NOMOR HP
+    const phoneCheck = validatePhoneNumber(phoneRaw);
+    if (!phoneCheck.valid) {
+      await messageQueue.add(sock, jid, { 
+        text: `❌ ${phoneCheck.error}
+
+Contoh nomor yang benar:
+• 6281234567890
+• 081234567890
+• 62-812-3456-7890
+
+Nomor akan dinormalisasi ke format 62xxx` 
+      });
+      console.log(`   → Validasi nomor gagal: ${phoneCheck.error}`);
+      return;
+    }
+
+    const nisn = nisnCheck.nisn;
+    const nama_orang_tua = nameCheck.name;
+    const no_hp = phoneCheck.phone;
+
+    console.log(`\n[→] MEMPROSES PENDAFTARAN`);
+    console.log(`    NISN: ${nisn}`);
+    console.log(`    Nama: ${nama_orang_tua}`);
+    console.log(`    No HP: ${no_hp}`);
+
+    // Kirim indikator mengetik
+    await sock.sendPresenceUpdate('composing', jid);
+
+    // ✅ KIRIM KE API
+    try {
+      const response = await axios.post(API_URL, {
+        nisn,
+        nama_orang_tua,
+        no_hp
+      }, {
+        headers: {
+          'Authorization': `Bearer ${API_SECRET}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      });
+
+      await sock.sendPresenceUpdate('paused', jid);
+
+      if (response.data.success) {
+        const successMsg = `✅ *PENDAFTARAN BERHASIL!*
+
+📋 *Data Terdaftar:*
+━━━━━━━━━━━━━━━━━━━━━
+👤 Nama: ${nama_orang_tua}
+🎓 NISN: ${nisn}
+📱 No HP: ${no_hp}
+━━━━━━━━━━━━━━━━━━━━━
+
+✓ Nomor HP telah diverifikasi
+✓ Notifikasi absensi akan dikirim ke nomor ini
+
+Terima kasih sudah mendaftar! 🙏`;
+        
+        await messageQueue.add(sock, jid, { text: successMsg });
+        
+        console.log(`[✓] BERHASIL REGISTRASI`);
+        console.log(`    → Data tersimpan di database`);
+        console.log(`    → Notifikasi akan dikirim ke: ${no_hp}`);
+        console.log(`    → Success message ditambahkan ke queue`);
+        console.log(`    → Queue size: ${messageQueue.getQueueSize()}`);
+        console.log('=' .repeat(60));
+      } else {
+        throw new Error(response.data.message || 'Gagal di backend');
+      }
+
+    } catch (error) {
+      await sock.sendPresenceUpdate('paused', jid);
+      
+      let errorMsg = '⚠️ *GAGAL MENYIMPAN DATA*\n\n';
+      
+      if (error.response) {
+        const status = error.response.status;
+        const message = error.response.data?.message || '';
+        
+        console.log(`[✗] API Error - Status: ${status}`);
+        console.log(`    Message: ${message}`);
+        
+        if (status === 409 || message.toLowerCase().includes('sudah terdaftar')) {
+          errorMsg += `📌 Data sudah terdaftar sebelumnya:
+• NISN: ${nisn}
+• Nama: ${nama_orang_tua}
+• No HP: ${no_hp}
+
+Jika ini bukan Anda atau ada kesalahan, hubungi admin sekolah.`;
+        } else if (status === 401 || status === 403) {
+          errorMsg += `🔒 Autentikasi gagal.\nSilakan hubungi admin sistem.`;
+        } else if (status === 400) {
+          errorMsg += `📝 Data tidak valid:\n${message}\n\nPastikan format sudah benar.`;
+        } else {
+          errorMsg += `💬 ${message}\n\nJika masalah berlanjut, hubungi admin.`;
+        }
+      } else if (error.code === 'ECONNREFUSED') {
+        errorMsg += `🔌 Server tidak dapat dihubungi.\nSilakan coba beberapa saat lagi.`;
+        console.log(`[✗] Connection refused`);
+      } else if (error.code === 'ETIMEDOUT') {
+        errorMsg += `⏱️ Request timeout.\nServer membutuhkan waktu terlalu lama.\nSilakan coba lagi.`;
+        console.log(`[✗] Timeout`);
+      } else {
+        errorMsg += `❌ Terjadi kesalahan sistem.\nSilakan coba lagi dalam beberapa menit.`;
+        console.log(`[✗] Error: ${error.message}`);
+      }
+      
+      await sock.sendMessage(jid, { text: errorMsg });
+      console.log('=' .repeat(60));
+    }
+
+  } catch (error) {
+    console.error('\n💥 [HANDLER ERROR]', error.message);
+    // Jangan log full stack untuk production, cukup message
+    if (process.env.NODE_ENV === 'development') {
+      console.error(error.stack);
+    }
+  }
 }
 
 async function connectToWhatsApp() {
@@ -238,6 +506,76 @@ async function connectToWhatsApp() {
       console.log('✅ WhatsApp terhubung! Siap menerima pesan...\n');
       console.log(`📱 Bot Number: ${sock.user?.id || 'Unknown'}\n`);
       console.log('=' .repeat(60));
+      
+      // ✅ LOAD UNREAD MESSAGES (pesan yang masuk saat bot offline)
+      console.log('\n🔍 Memeriksa pesan yang belum dibaca...\n');
+      
+      try {
+        // Ambil semua chat
+        const chats = await sock.groupFetchAllParticipating ? 
+          Object.values(await sock.groupFetchAllParticipating()) : [];
+        
+        // Proses pesan yang belum dibaca dari setiap chat
+        let unreadCount = 0;
+        
+        // Gunakan loadMessages untuk ambil history
+        setTimeout(async () => {
+          try {
+            console.log('📥 Memuat history pesan...');
+            
+            // Get all chats including personal chats
+            const allChats = Object.values(sock.chats || {});
+            
+            for (const chat of allChats) {
+              const jid = chat.id;
+              
+              // Hanya proses personal chat
+              if (!isPersonalChat(jid)) continue;
+              
+              // Cek unread count
+              if (chat.unreadCount && chat.unreadCount > 0) {
+                console.log(`\n📬 Chat dari ${jid} memiliki ${chat.unreadCount} pesan belum dibaca`);
+                
+                try {
+                  // Load messages dari chat ini
+                  const messages = await sock.fetchMessagesFromWA(jid, 20);
+                  
+                  if (messages && messages.length > 0) {
+                    console.log(`   → Memproses ${messages.length} pesan...`);
+                    
+                    for (const msg of messages) {
+                      // Skip jika pesan dari bot sendiri
+                      if (msg.key.fromMe) continue;
+                      
+                      // Proses pesan
+                      await processMessage(sock, msg);
+                      unreadCount++;
+                      
+                      // Delay antar proses untuk tidak overwhelm
+                      await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                  }
+                } catch (err) {
+                  console.error(`   ✗ Error loading messages dari ${jid}:`, err.message);
+                }
+              }
+            }
+            
+            if (unreadCount > 0) {
+              console.log(`\n✓ Selesai memproses ${unreadCount} pesan yang tertunda`);
+            } else {
+              console.log('\n✓ Tidak ada pesan tertunda');
+            }
+            console.log('=' .repeat(60));
+            
+          } catch (error) {
+            console.error('⚠️  Error saat load unread messages:', error.message);
+          }
+        }, 5000); // Tunggu 5 detik setelah connected
+        
+      } catch (error) {
+        console.error('⚠️  Error checking unread messages:', error.message);
+      }
     }
   });
 
