@@ -52,6 +52,66 @@ function saveContactedUsers() {
 // Auto-save setiap 5 menit
 setInterval(saveContactedUsers, 5 * 60 * 1000);
 
+// ✅ Message Queue untuk prevent spam detection
+class MessageQueue {
+  constructor(minDelay = 6000) {
+    this.queue = [];
+    this.processing = false;
+    this.minDelay = minDelay; // Minimal 6 detik
+    this.lastSendTime = 0;
+  }
+
+  async add(sock, jid, message) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ sock, jid, message, resolve, reject });
+      this.process();
+    });
+  }
+
+  async process() {
+    if (this.processing || this.queue.length === 0) return;
+    
+    this.processing = true;
+
+    while (this.queue.length > 0) {
+      const now = Date.now();
+      const timeSinceLastSend = now - this.lastSendTime;
+      
+      // Tunggu jika belum cukup delay
+      if (timeSinceLastSend < this.minDelay) {
+        const waitTime = this.minDelay - timeSinceLastSend;
+        console.log(`   ⏳ Menunggu ${Math.ceil(waitTime / 1000)}s sebelum kirim pesan (anti-spam)...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+
+      const item = this.queue.shift();
+      
+      try {
+        await item.sock.sendMessage(item.jid, item.message);
+        this.lastSendTime = Date.now();
+        item.resolve();
+      } catch (error) {
+        item.reject(error);
+      }
+
+      // Tambahan delay random 1-2 detik untuk lebih natural
+      if (this.queue.length > 0) {
+        const randomDelay = Math.floor(Math.random() * 1000) + 1000;
+        await new Promise(resolve => setTimeout(resolve, randomDelay));
+      }
+    }
+
+    this.processing = false;
+  }
+
+  getQueueSize() {
+    return this.queue.length;
+  }
+}
+
+// Inisialisasi message queue dengan delay 6 detik
+const messageQueue = new MessageQueue(6000);
+
 // ✅ Validasi format nomor HP
 function validatePhoneNumber(phone) {
   // Hapus spasi, dash, plus jika ada
@@ -238,7 +298,7 @@ ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
 
 📝 *Contoh:*
 \`\`\`
-ABSENSI#1234567890#Budi Susanto#6281234567890
+ABSENSI#0085517246#Syarif Hidayat#6281234567890
 \`\`\`
 
 ⚠️ *Perhatian:*
@@ -266,7 +326,7 @@ Terima kasih! 🙏`;
 ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
 \`\`\`
 
-Contoh: \`ABSENSI#1234567890#Budi Susanto#6281234567890\``;
+Contoh: \`ABSENSI#0085517246#Syarif Hidayat#6281234567890\``;
           
           await sock.sendMessage(jid, { text: reminderMsg });
           console.log(`   → Mengirim reminder (user lama)\n`);
@@ -293,7 +353,7 @@ ABSENSI#NISN#NAMA_ORANG_TUA#NOMOR_HP
 
 Contoh:
 \`\`\`
-ABSENSI#1234567890#Budi Susanto#6281234567890
+ABSENSI#0085517246#Syarif Hidayat#6281234567890
 \`\`\`
 
 Anda mengirim ${parts.length} bagian, seharusnya 4 bagian.`;
@@ -308,7 +368,7 @@ Anda mengirim ${parts.length} bagian, seharusnya 4 bagian.`;
       // ✅ VALIDASI NISN
       const nisnCheck = validateNISN(nisnRaw);
       if (!nisnCheck.valid) {
-        await sock.sendMessage(jid, { text: `❌ ${nisnCheck.error}\n\nContoh NISN yang benar: 1234567890` });
+        await sock.sendMessage(jid, { text: `❌ ${nisnCheck.error}\n\nContoh NISN yang benar: 0085517246` });
         console.log(`   → Validasi NISN gagal: ${nisnCheck.error}\n`);
         return;
       }
@@ -381,11 +441,13 @@ Nomor akan dinormalisasi ke format 62xxx`
 
 Terima kasih sudah mendaftar! 🙏`;
           
-          await sock.sendMessage(jid, { text: successMsg });
+          await messageQueue.add(sock, jid, { text: successMsg });
           
           console.log(`[✓] BERHASIL REGISTRASI`);
           console.log(`    → Data tersimpan di database`);
-          console.log(`    → Notifikasi akan dikirim ke: ${no_hp}\n`);
+          console.log(`    → Notifikasi akan dikirim ke: ${no_hp}`);
+          console.log(`    → Success message ditambahkan ke queue`);
+          console.log(`    → Queue size: ${messageQueue.getQueueSize()}\n`);
           console.log('=' .repeat(60));
         } else {
           throw new Error(response.data.message || 'Gagal di backend');
