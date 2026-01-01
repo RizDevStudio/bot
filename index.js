@@ -510,72 +510,121 @@ async function connectToWhatsApp() {
       // ✅ LOAD UNREAD MESSAGES (pesan yang masuk saat bot offline)
       console.log('\n🔍 Memeriksa pesan yang belum dibaca...\n');
       
-      try {
-        // Ambil semua chat
-        const chats = await sock.groupFetchAllParticipating ? 
-          Object.values(await sock.groupFetchAllParticipating()) : [];
-        
-        // Proses pesan yang belum dibaca dari setiap chat
-        let unreadCount = 0;
-        
-        // Gunakan loadMessages untuk ambil history
-        setTimeout(async () => {
-          try {
-            console.log('📥 Memuat history pesan...');
+      // Tunggu 10 detik untuk memastikan semua data tersinkronisasi
+      setTimeout(async () => {
+        try {
+          console.log('📥 Memuat history chat...\n');
+          
+          let totalUnread = 0;
+          let totalProcessed = 0;
+          const processedJids = new Set();
+          
+          // METODE 1: Dari sock.chats (primary method)
+          if (sock.chats) {
+            const chats = Object.values(sock.chats);
+            console.log(`📊 Ditemukan ${chats.length} total chat`);
             
-            // Get all chats including personal chats
-            const allChats = Object.values(sock.chats || {});
-            
-            for (const chat of allChats) {
+            for (const chat of chats) {
               const jid = chat.id;
               
-              // Hanya proses personal chat
+              // Skip kalau bukan personal chat
               if (!isPersonalChat(jid)) continue;
               
-              // Cek unread count
-              if (chat.unreadCount && chat.unreadCount > 0) {
-                console.log(`\n📬 Chat dari ${jid} memiliki ${chat.unreadCount} pesan belum dibaca`);
+              // Skip kalau sudah diproses
+              if (processedJids.has(jid)) continue;
+              
+              const unreadCount = chat.unreadCount || 0;
+              
+              if (unreadCount > 0) {
+                console.log(`\n📬 [${jid}]`);
+                console.log(`   → ${unreadCount} pesan belum dibaca`);
+                processedJids.add(jid);
+                totalUnread += unreadCount;
                 
                 try {
-                  // Load messages dari chat ini
-                  const messages = await sock.fetchMessagesFromWA(jid, 20);
+                  // Load messages history
+                  const messages = await sock.fetchMessagesFromWA(jid, unreadCount + 5);
                   
                   if (messages && messages.length > 0) {
                     console.log(`   → Memproses ${messages.length} pesan...`);
                     
-                    for (const msg of messages) {
-                      // Skip jika pesan dari bot sendiri
-                      if (msg.key.fromMe) continue;
-                      
-                      // Proses pesan
+                    // Sort by timestamp (oldest first)
+                    const sortedMessages = messages
+                      .filter(msg => !msg.key.fromMe) // Skip pesan dari bot
+                      .sort((a, b) => (a.messageTimestamp || 0) - (b.messageTimestamp || 0));
+                    
+                    for (const msg of sortedMessages) {
                       await processMessage(sock, msg);
-                      unreadCount++;
+                      totalProcessed++;
                       
-                      // Delay antar proses untuk tidak overwhelm
-                      await new Promise(resolve => setTimeout(resolve, 1000));
+                      // Small delay between processing
+                      await new Promise(resolve => setTimeout(resolve, 500));
                     }
+                    
+                    console.log(`   ✓ Selesai proses chat ini`);
                   }
                 } catch (err) {
-                  console.error(`   ✗ Error loading messages dari ${jid}:`, err.message);
+                  console.error(`   ✗ Error: ${err.message}`);
                 }
+                
+                // Delay antar chat untuk tidak overwhelm
+                await new Promise(resolve => setTimeout(resolve, 2000));
               }
             }
-            
-            if (unreadCount > 0) {
-              console.log(`\n✓ Selesai memproses ${unreadCount} pesan yang tertunda`);
-            } else {
-              console.log('\n✓ Tidak ada pesan tertunda');
-            }
-            console.log('=' .repeat(60));
-            
-          } catch (error) {
-            console.error('⚠️  Error saat load unread messages:', error.message);
           }
-        }, 5000); // Tunggu 5 detik setelah connected
-        
-      } catch (error) {
-        console.error('⚠️  Error checking unread messages:', error.message);
-      }
+          
+          // METODE 2: Fallback - Cek dari message store jika ada
+          if (sock.ev && totalUnread === 0) {
+            console.log('\n🔄 Mencoba metode alternatif...');
+            
+            // Subscribe ke message history
+            const messageListener = async (update) => {
+              if (update.type === 'notify') {
+                for (const msg of update.messages) {
+                  const jid = msg.key.remoteJid;
+                  
+                  if (!isPersonalChat(jid)) continue;
+                  if (msg.key.fromMe) continue;
+                  if (processedJids.has(jid)) continue;
+                  
+                  console.log(`\n📬 Pesan dari history: ${jid}`);
+                  await processMessage(sock, msg);
+                  totalProcessed++;
+                  processedJids.add(jid);
+                }
+              }
+            };
+            
+            // Listen sebentar untuk catch messages
+            sock.ev.on('messages.update', messageListener);
+            
+            // Wait 5 seconds then remove listener
+            setTimeout(() => {
+              sock.ev.off('messages.update', messageListener);
+            }, 5000);
+          }
+          
+          console.log('\n' + '='.repeat(60));
+          if (totalUnread > 0 || totalProcessed > 0) {
+            console.log(`\n✅ RINGKASAN:`);
+            console.log(`   📬 Total pesan belum dibaca: ${totalUnread}`);
+            console.log(`   ✓ Total pesan diproses: ${totalProcessed}`);
+            console.log(`   📊 Queue size: ${messageQueue.getQueueSize()}`);
+            
+            if (messageQueue.getQueueSize() > 0) {
+              const estimatedTime = Math.ceil(messageQueue.getQueueSize() * 20 / 60);
+              console.log(`   ⏱️  Estimasi waktu pengiriman: ~${estimatedTime} menit`);
+            }
+          } else {
+            console.log('\n✓ Tidak ada pesan tertunda atau belum dibaca');
+          }
+          console.log('=' .repeat(60) + '\n');
+          
+        } catch (error) {
+          console.error('⚠️  Error saat load unread messages:', error.message);
+          console.error(error.stack);
+        }
+      }, 10000); // Tunggu 10 detik setelah connected untuk sinkronisasi
     }
   });
 
